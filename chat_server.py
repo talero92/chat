@@ -8,23 +8,30 @@ import base64
 
 class SecureChatServer:
     def __init__(self):
+        import os
+        from flask import Flask
+        from flask_socketio import SocketIO
+        from cryptography.fernet import Fernet
+        import base64
+
         self.app = Flask(__name__)
         self.app.config['SECRET_KEY'] = os.urandom(24)
     
+        # Generate encryption key
         self.fernet_key = base64.urlsafe_b64encode(os.urandom(32))
         self.encryption_key = self.fernet_key.decode()
         self.fernet = Fernet(self.fernet_key)
-        
-        # Set up SocketIO with eventlet for production WebSocket support
+    
+        # Set up SocketIO with 'eventlet' for asynchronous support
         self.socketio = SocketIO(
             self.app,
             path='/api/resources/fetch',
             logger=False,
             engineio_logger=False,
             cors_allowed_origins="*",
-            async_mode='eventlet'  # Use 'eventlet' for asynchronous support
+            async_mode='eventlet'  # Ensure 'eventlet' is installed and in requirements.txt
         )
-        
+    
         @self.app.after_request
         def after_request(response):
             headers = {
@@ -35,18 +42,21 @@ class SecureChatServer:
             for k, v in headers.items():
                 response.headers.add(k, v)
             return response
-        
-        # Render uses the PORT environment variable, default to 5000 if not set
-        self.port = int(os.environ.get('PORT', 5000))
+    
+        # Set host and port for Render deployment
+        self.host = '0.0.0.0'  # Bind to all interfaces
+        self.port = int(os.environ.get('PORT', 10000))  # Use PORT from environment or default to 10000
+    
         self.active_users = {}
         self.sid_to_username = {}
-        
+    
         self.setup_routes()
         self.setup_socketio()
-        
+    
         self.MAX_MSG_SIZE = 1024 * 1024  # Max message size set to 1MB
 
     def hash_username(self, username):
+        import hashlib
         return hashlib.sha256(username.encode()).hexdigest()
 
     def setup_routes(self):
@@ -118,13 +128,11 @@ class SecureChatServer:
 
     def run(self):
         try:
-            # Render expects the app to listen on all interfaces
-            print(f"Starting server on 0.0.0.0:{self.port}")
+            print(f"Starting server on {self.host}:{self.port}")
             self.socketio.run(
                 self.app,
-                host='0.0.0.0',
-                port=self.port,
-                allow_unsafe_werkzeug=True
+                host=self.host,
+                port=self.port
             )
         except Exception as e:
             print(f"Server error: {e}")
