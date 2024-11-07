@@ -1,0 +1,4 @@
+Flask==2.2.3
+Flask-SocketIO==5.3.3
+cryptography==39.0.1
+eventlet==0.33.0
