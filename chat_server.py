@@ -14,7 +14,7 @@ logger = logging.getLogger(__name__)
 
 class SecureChatServer:
     def __init__(self):
-        self.CLIENT_VERSION = "1.0.0"
+        self.CLIENT_VERSION = "1.0.1"
         self.REQUIRED_VERSION = "1.0.1"
         self.GITHUB_RELEASE = "https://raw.githubusercontent.com/talero92/chat/main/chat_client.py"
         self.app = Flask(__name__)
