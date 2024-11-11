@@ -5,7 +5,7 @@ from urllib3.exceptions import InsecureRequestWarning;requests.packages.urllib3.
 [logging.getLogger(name).setLevel(logging.WARNING)for name in['socketio','engineio','werkzeug']]
 class SecureChat:
     def __init__(self):
-        self.VERSION="1.0.0";self.sio=None;self.server_url=None;self.username=None;self.fernet=None;self.encryption_key=None
+        self.VERSION="1.0.1";self.sio=None;self.server_url=None;self.username=None;self.fernet=None;self.encryption_key=None
         self.session_key=None;self.MAX_MSG_SIZE=1024*8;self.MAX_QUEUE_SIZE=100;self.message_queue=queue.Queue(maxsize=self.MAX_QUEUE_SIZE)
         self.running=True;self.active_users=set();self.current_input="";self.is_admin=False
         self.user_agents=['Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36','Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36']
