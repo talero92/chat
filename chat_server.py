@@ -69,6 +69,50 @@ class SecureChatServer:
         def health_check():
             return jsonify({'status': 'ok', 'cache-status': 'hit', 'current_version': self.REQUIRED_VERSION})
 
+        @self.app.route('/api/resources/complete_auth', methods=['POST'])
+        def complete_authentication():
+            try:
+                data = request.get_json(force=True)
+                username = str(data.get('username', ''))
+                client_challenge = str(data.get('client_challenge', ''))
+                session_key = str(data.get('session_key', ''))
+                
+                if not all([username, client_challenge, session_key]):
+                    raise ValueError("Missing required authentication parameters")
+                
+                hashed_username = self.hash_username(username)
+                if hashed_username not in self.pending_auth:
+                    raise ValueError("No pending authentication")
+                
+                auth_data = self.pending_auth[hashed_username]
+                if session_key != auth_data['session_key']:
+                    raise ValueError("Invalid session")
+                
+                if (datetime.now() - auth_data['timestamp']).total_seconds() > 300:
+                    del self.pending_auth[hashed_username]
+                    raise ValueError("Challenge expired")
+                
+                encryption_key = self.derive_encryption_key(
+                    auth_data['challenge'],
+                    client_challenge,
+                    username,
+                    session_key
+                )
+                
+                self.active_users[hashed_username] = {
+                    'connected_at': datetime.now().isoformat(),
+                    'address': request.remote_addr,
+                    'username': username,
+                    'encryption_key': encryption_key,
+                    'session_key': session_key,
+                    'fernet': Fernet(encryption_key)
+                }
+                
+                del self.pending_auth[hashed_username]
+                return jsonify({'status': 'ok', 'message': 'Authentication complete'})
+            except Exception as e:
+                return jsonify({'error': str(e)}), 401
+
         @self.app.route('/api/resources/validate', methods=['POST', 'OPTIONS'])
         def authenticate():
             if request.method == 'OPTIONS':
