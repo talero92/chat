@@ -1,8 +1,8 @@
 import eventlet;eventlet.monkey_patch();from flask import Flask,request,jsonify;from flask_socketio import SocketIO,emit;import os,hashlib,base64,json,logging,sys,eventlet,secrets;from datetime import datetime;from cryptography.fernet import Fernet;from cryptography.hazmat.primitives import hashes;from cryptography.hazmat.primitives.kdf.pbkdf2 import PBKDF2HMAC;from cryptography.hazmat.backends import default_backend;logging.basicConfig(level=logging.WARNING,format='%(asctime)s - %(levelname)s - %(message)s');logger=logging.getLogger(__name__);[logging.getLogger(name).setLevel(logging.ERROR)for name in['werkzeug','socketio','engineio']]
 class SecureChatServer:
     def __init__(self):
-        self.CLIENT_VERSION="1.0.0";self.REQUIRED_VERSION="1.0.1" # Update this when new version is released
-        self.GITHUB_RELEASE="https://raw.githubusercontent.com/YourUsername/YourRepo/main/chat_client.py"
+        self.CLIENT_VERSION="1.0.0";self.REQUIRED_VERSION="1.0.1"
+        self.GITHUB_RELEASE="https://raw.githubusercontent.com/talero92/chat/main/chat_client.py"
         self.app=Flask(__name__);self.app.config['SECRET_KEY']=os.urandom(32);self.socketio=SocketIO(self.app,logger=False,engineio_logger=False,cors_allowed_origins="*",async_mode='eventlet');self.host,self.port='0.0.0.0',int(os.environ.get('PORT',10001));self.active_users={};self.sid_to_username={};self.pending_auth={};self.session_keys={};self.MAX_MSG_SIZE=1024*1024;self.admin_secret=secrets.token_urlsafe(16);self.admin_users=set();print(f"\n[+] Generated Admin Secret Key: {self.admin_secret}");print("[!] Save this key to authenticate as admin using /auth <key>\n");self.setup_routes();self.setup_socketio()
     def generate_session_key(self):return base64.urlsafe_b64encode(os.urandom(32)).decode()
     def hash_username(self,username):return hashlib.sha256(username.encode()).hexdigest()
@@ -19,8 +19,7 @@ class SecureChatServer:
         @self.app.route('/api/resources/validate',methods=['POST','OPTIONS'])
         def authenticate():
             if request.method=='OPTIONS':return jsonify({'status':'ok'})
-            try:
-                current_time=datetime.now();[self.pending_auth.pop(k)for k,v in list(self.pending_auth.items())if(current_time-v['timestamp']).total_seconds()>300];[self.active_users.pop(k)for k,v in list(self.active_users.items())if'sid'not in v and(current_time-datetime.fromisoformat(v['connected_at'])).total_seconds()>30];username=str(request.get_json(force=True).get('username',''));client_version=str(request.get_json(force=True).get('version',self.CLIENT_VERSION))
+            try:current_time=datetime.now();[self.pending_auth.pop(k)for k,v in list(self.pending_auth.items())if(current_time-v['timestamp']).total_seconds()>300];[self.active_users.pop(k)for k,v in list(self.active_users.items())if'sid'not in v and(current_time-datetime.fromisoformat(v['connected_at'])).total_seconds()>30];username=str(request.get_json(force=True).get('username',''));client_version=str(request.get_json(force=True).get('version',self.CLIENT_VERSION))
                 if not username:raise ValueError('Invalid identifier')
                 if client_version!=self.REQUIRED_VERSION:return jsonify({'status':'update_required','current_version':self.REQUIRED_VERSION,'update_url':self.GITHUB_RELEASE}),426
                 hashed_username=self.hash_username(username)
@@ -31,7 +30,11 @@ class SecureChatServer:
             except Exception as e:return jsonify({'error':str(e)}),400
         @self.app.route('/api/resources/complete_auth',methods=['POST'])
         def complete_authentication():
-            try:data=request.get_json(force=True);username=str(data.get('username',''));client_challenge=str(data.get('client_challenge',''));session_key=str(data.get('session_key',''))
+            try:
+                data=request.get_json(force=True)
+                username=str(data.get('username',''))
+                client_challenge=str(data.get('client_challenge',''))
+                session_key=str(data.get('session_key',''))
                 if not all([username,client_challenge,session_key]):raise ValueError("Missing required authentication parameters")
                 hashed_username=self.hash_username(username)
                 if hashed_username not in self.pending_auth:raise ValueError("No pending authentication")
@@ -41,8 +44,7 @@ class SecureChatServer:
                 encryption_key=self.derive_encryption_key(auth_data['challenge'],client_challenge,username,session_key);self.active_users[hashed_username]={'connected_at':datetime.now().isoformat(),'address':request.remote_addr,'username':username,'encryption_key':encryption_key,'session_key':session_key,'fernet':Fernet(encryption_key)};del self.pending_auth[hashed_username];return jsonify({'status':'ok','message':'Authentication complete'})
             except Exception as e:return jsonify({'error':str(e)}),401
         @self.app.after_request
-        def after_request(response):
-            headers={'Access-Control-Allow-Origin':'*','Access-Control-Allow-Headers':'Content-Type,Authorization','Access-Control-Allow-Methods':'GET,PUT,POST,DELETE,OPTIONS'};[response.headers.add(k,v)for k,v in headers.items()];return response
+        def after_request(response):headers={'Access-Control-Allow-Origin':'*','Access-Control-Allow-Headers':'Content-Type,Authorization','Access-Control-Allow-Methods':'GET,PUT,POST,DELETE,OPTIONS'};[response.headers.add(k,v)for k,v in headers.items()];return response
     def setup_socketio(self):
         @self.socketio.on('connect')
         def handle_connect():pass
