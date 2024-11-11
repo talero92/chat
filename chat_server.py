@@ -3,7 +3,7 @@ eventlet.monkey_patch()
 
 from flask import Flask, request, jsonify
 from flask_socketio import SocketIO, emit
-import os, hashlib, base64, json, logging, sys, eventlet, secrets
+import os, hashlib, base64, json, logging, sys, eventlet, secrets, threading, time
 from datetime import datetime
 from cryptography.fernet import Fernet
 from cryptography.hazmat.primitives import hashes
@@ -25,12 +25,42 @@ class SecureChatServer:
         self.pending_auth = {}
         self.session_keys = {}
         self.MAX_MSG_SIZE = 1024 * 1024
-        self.admin_secret = secrets.token_urlsafe(16)  # Generate shorter but still secure token
+        self.admin_secret = secrets.token_urlsafe(16)
         self.admin_users = set()
-        print(f"\n[+] Generated Admin Secret Key: {self.admin_secret}")
-        print("[!] Save this key to authenticate as admin using /auth <key>\n")
+        
+        # Print admin key prominently
+        self.print_admin_key()
+        
+        # Start a thread to periodically print the admin key
+        self.start_key_printer()
+        
         self.setup_routes()
         self.setup_socketio()
+
+    def print_admin_key(self):
+        key_message = """
+╔════════════════════════════════════════════════════════════════╗
+║                     ADMIN KEY INFORMATION                      ║
+╠════════════════════════════════════════════════════════════════╣
+║                                                               ║
+║  Admin Secret Key: {key}                                      
+║                                                               ║
+║  Use this command to authenticate: /auth {key}                 
+║                                                               ║
+╚════════════════════════════════════════════════════════════════╝
+""".format(key=self.admin_secret)
+        print(key_message)
+        sys.stdout.flush()
+
+    def start_key_printer(self):
+        def print_key_periodically():
+            while True:
+                self.print_admin_key()
+                time.sleep(300)  # Print every 5 minutes
+        
+        thread = threading.Thread(target=print_key_periodically)
+        thread.daemon = True
+        thread.start()
 
     def generate_session_key(self): return base64.urlsafe_b64encode(os.urandom(32)).decode()
     
