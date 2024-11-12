@@ -1,7 +1,7 @@
 import eventlet; eventlet.monkey_patch()
 from flask import Flask, request, jsonify
 from flask_socketio import SocketIO, emit
-import os, hashlib, base64, json, logging, sys, secrets
+import os, hashlib, base64, json, logging, sys
 from datetime import datetime
 from cryptography.fernet import Fernet
 from cryptography.hazmat.primitives import hashes
@@ -15,38 +15,20 @@ logger = logging.getLogger(__name__)
 class SecureChatServer:
     def __init__(self):
         self.CLIENT_VERSION = "1.0.1"
-        self.REQUIRED_VERSION = "1.0.1"
-        self.GITHUB_RELEASE = "https://raw.githubusercontent.com/talero92/chat/main/chat_client.py"
         self.app = Flask(__name__)
         self.app.config['SECRET_KEY'] = os.urandom(32)
-        self.socketio = SocketIO(self.app, logger=False, engineio_logger=False, cors_allowed_origins="*", async_mode='eventlet')
+        self.socketio = SocketIO(self.app, logger=False, engineio_logger=False, 
+                               cors_allowed_origins="*", async_mode='eventlet')
         self.host, self.port = '0.0.0.0', int(os.environ.get('PORT', 10001))
         self.active_users = {}
         self.sid_to_username = {}
         self.pending_auth = {}
-        self.session_keys = {}
         self.MAX_MSG_SIZE = 1024 * 1024
-        self.admin_secret = secrets.token_urlsafe(16)
-        self.admin_users = set()
-        print(f"\n[+] Generated Admin Secret Key: {self.admin_secret}")
-        print("[!] Save this key to authenticate as admin using /auth <key>\n")
         self.setup_routes()
         self.setup_socketio()
 
-    def generate_session_key(self):
-        return base64.urlsafe_b64encode(os.urandom(32)).decode()
-
     def hash_username(self, username):
         return hashlib.sha256(username.encode()).hexdigest()
-
-    def authenticate_admin(self, username, secret):
-        if secret == self.admin_secret:
-            self.admin_users.add(self.hash_username(username))
-            return True
-        return False
-
-    def is_admin(self, username):
-        return self.hash_username(username) in self.admin_users
 
     def derive_encryption_key(self, server_challenge, client_challenge, username, session_key):
         try:
@@ -67,7 +49,7 @@ class SecureChatServer:
     def setup_routes(self):
         @self.app.route('/assets/data/stream', methods=['GET'])
         def health_check():
-            return jsonify({'status': 'ok', 'cache-status': 'hit', 'current_version': self.REQUIRED_VERSION})
+            return jsonify({'status': 'ok', 'cache-status': 'hit', 'current_version': self.CLIENT_VERSION})
 
         @self.app.route('/api/resources/complete_auth', methods=['POST'])
         def complete_authentication():
@@ -87,10 +69,6 @@ class SecureChatServer:
                 auth_data = self.pending_auth[hashed_username]
                 if session_key != auth_data['session_key']:
                     raise ValueError("Invalid session")
-                
-                if (datetime.now() - auth_data['timestamp']).total_seconds() > 300:
-                    del self.pending_auth[hashed_username]
-                    raise ValueError("Challenge expired")
                 
                 encryption_key = self.derive_encryption_key(
                     auth_data['challenge'],
@@ -118,24 +96,16 @@ class SecureChatServer:
             if request.method == 'OPTIONS':
                 return jsonify({'status': 'ok'})
             try:
-                current_time = datetime.now()
-                # Clean up expired auth requests and inactive users
-                [self.pending_auth.pop(k) for k, v in list(self.pending_auth.items()) 
-                 if (current_time - v['timestamp']).total_seconds() > 300]
-                [self.active_users.pop(k) for k, v in list(self.active_users.items()) 
-                 if 'sid' not in v and (current_time - datetime.fromisoformat(v['connected_at'])).total_seconds() > 30]
-                
                 username = str(request.get_json(force=True).get('username', ''))
                 client_version = str(request.get_json(force=True).get('version', self.CLIENT_VERSION))
                 
                 if not username:
                     raise ValueError('Invalid identifier')
                 
-                if client_version != self.REQUIRED_VERSION:
+                if client_version != self.CLIENT_VERSION:
                     return jsonify({
                         'status': 'update_required',
-                        'current_version': self.REQUIRED_VERSION,
-                        'update_url': self.GITHUB_RELEASE
+                        'current_version': self.CLIENT_VERSION
                     }), 426
 
                 hashed_username = self.hash_username(username)
@@ -146,7 +116,7 @@ class SecureChatServer:
                         raise ValueError('Identifier in use')
                 
                 server_challenge = base64.urlsafe_b64encode(os.urandom(32)).decode()
-                session_key = self.generate_session_key()
+                session_key = base64.urlsafe_b64encode(os.urandom(32)).decode()
                 self.pending_auth[hashed_username] = {
                     'challenge': server_challenge,
                     'timestamp': datetime.now(),
@@ -161,6 +131,19 @@ class SecureChatServer:
         @self.socketio.on('connect')
         def handle_connect():
             pass
+
+        @self.socketio.on('disconnect')
+        def handle_disconnect():
+            try:
+                sid = request.sid
+                if sid in self.sid_to_username:
+                    hashed_username = self.sid_to_username[sid]
+                    if hashed_username in self.active_users:
+                        del self.active_users[hashed_username]
+                    del self.sid_to_username[sid]
+                    self.broadcast_user_update()
+            except Exception as e:
+                logger.error(f"Disconnect error: {str(e)}")
 
         @self.socketio.on('register')
         def handle_register(data):
@@ -200,27 +183,14 @@ class SecureChatServer:
                 decrypted_msg = sender['fernet'].decrypt(encrypted_msg.encode()).decode()
                 message_data = json.loads(decrypted_msg)
                 
-                if message_data['content'].startswith('/auth '):
-                    try:
-                        _, secret = message_data['content'].split(' ', 1)
-                        if self.authenticate_admin(message_data['username'], secret):
-                            admin_msg = {'username': 'System', 'content': 'Admin privileges granted'}
-                            encrypted_response = sender['fernet'].encrypt(json.dumps(admin_msg).encode()).decode()
-                            emit('resource_update', {
-                                'message': encrypted_response,
-                                'timestamp': datetime.now().isoformat()
-                            }, room=sender['sid'])
-                            return
-                    except:
-                        pass
-
                 # Broadcast message to all users
                 for recipient_hash, recipient in self.active_users.items():
                     try:
-                        emit('resource_update', {
-                            'message': recipient['fernet'].encrypt(json.dumps(message_data).encode()).decode(),
-                            'timestamp': datetime.now().isoformat()
-                        }, room=recipient['sid'])
+                        if 'sid' in recipient:
+                            emit('resource_update', {
+                                'message': recipient['fernet'].encrypt(json.dumps(message_data).encode()).decode(),
+                                'timestamp': datetime.now().isoformat()
+                            }, room=recipient['sid'])
                     except:
                         continue
                         
@@ -229,7 +199,7 @@ class SecureChatServer:
 
     def broadcast_user_update(self):
         try:
-            active_streams = [data['username'] for data in self.active_users.values()]
+            active_streams = [data['username'] for data in self.active_users.values() if 'sid' in data]
             emit('cache_status', {'active_streams': active_streams}, broadcast=True)
         except Exception:
             pass
