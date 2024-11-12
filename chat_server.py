@@ -1,25 +1,27 @@
 import eventlet; eventlet.monkey_patch()
 from flask import Flask, request, jsonify
 from flask_socketio import SocketIO, emit
-import os, hashlib, base64, json, logging, sys
+import os, hashlib, base64, json
 from datetime import datetime
 from cryptography.fernet import Fernet
 from cryptography.hazmat.primitives import hashes
 from cryptography.hazmat.primitives.kdf.pbkdf2 import PBKDF2HMAC
 from cryptography.hazmat.backends import default_backend
 
-logging.basicConfig(level=logging.WARNING, format='%(asctime)s - %(levelname)s - %(message)s')
-logger = logging.getLogger(__name__)
-[logging.getLogger(name).setLevel(logging.ERROR) for name in ['werkzeug', 'socketio', 'engineio']]
-
 class SecureChatServer:
     def __init__(self):
         self.CLIENT_VERSION = "1.0.1"
         self.app = Flask(__name__)
         self.app.config['SECRET_KEY'] = os.urandom(32)
-        self.socketio = SocketIO(self.app, logger=False, engineio_logger=False, 
-                               cors_allowed_origins="*", async_mode='eventlet')
-        self.host, self.port = '0.0.0.0', int(os.environ.get('PORT', 10001))
+        self.socketio = SocketIO(
+            self.app, 
+            logger=False, 
+            engineio_logger=False,
+            cors_allowed_origins="*", 
+            async_mode='eventlet'
+        )
+        self.host = '0.0.0.0'
+        self.port = int(os.environ.get('PORT', 10001))
         self.active_users = {}
         self.sid_to_username = {}
         self.pending_auth = {}
@@ -43,13 +45,16 @@ class SecureChatServer:
             )
             return base64.urlsafe_b64encode(kdf.derive(unique_material))
         except Exception as e:
-            logger.error(f"Key derivation failed: {str(e)}")
             raise
 
     def setup_routes(self):
         @self.app.route('/assets/data/stream', methods=['GET'])
         def health_check():
-            return jsonify({'status': 'ok', 'cache-status': 'hit', 'current_version': self.CLIENT_VERSION})
+            return jsonify({
+                'status': 'ok', 
+                'cache-status': 'hit', 
+                'current_version': self.CLIENT_VERSION
+            })
 
         @self.app.route('/api/resources/complete_auth', methods=['POST'])
         def complete_authentication():
@@ -60,15 +65,15 @@ class SecureChatServer:
                 session_key = str(data.get('session_key', ''))
                 
                 if not all([username, client_challenge, session_key]):
-                    raise ValueError("Missing required authentication parameters")
+                    return jsonify({'error': 'Invalid parameters'}), 401
                 
                 hashed_username = self.hash_username(username)
                 if hashed_username not in self.pending_auth:
-                    raise ValueError("No pending authentication")
+                    return jsonify({'error': 'No pending auth'}), 401
                 
                 auth_data = self.pending_auth[hashed_username]
                 if session_key != auth_data['session_key']:
-                    raise ValueError("Invalid session")
+                    return jsonify({'error': 'Invalid session'}), 401
                 
                 encryption_key = self.derive_encryption_key(
                     auth_data['challenge'],
@@ -87,20 +92,19 @@ class SecureChatServer:
                 }
                 
                 del self.pending_auth[hashed_username]
-                return jsonify({'status': 'ok', 'message': 'Authentication complete'})
-            except Exception as e:
-                return jsonify({'error': str(e)}), 401
-
-        @self.app.route('/api/resources/validate', methods=['POST', 'OPTIONS'])
-        def authenticate():
-            if request.method == 'OPTIONS':
                 return jsonify({'status': 'ok'})
+            except:
+                return jsonify({'error': 'Auth failed'}), 401
+
+        @self.app.route('/api/resources/validate', methods=['POST'])
+        def authenticate():
             try:
-                username = str(request.get_json(force=True).get('username', ''))
-                client_version = str(request.get_json(force=True).get('version', self.CLIENT_VERSION))
+                data = request.get_json(force=True)
+                username = str(data.get('username', ''))
+                client_version = str(data.get('version', self.CLIENT_VERSION))
                 
                 if not username:
-                    raise ValueError('Invalid identifier')
+                    return jsonify({'error': 'Invalid username'}), 400
                 
                 if client_version != self.CLIENT_VERSION:
                     return jsonify({
@@ -113,19 +117,25 @@ class SecureChatServer:
                     if 'sid' not in self.active_users[hashed_username]:
                         del self.active_users[hashed_username]
                     else:
-                        raise ValueError('Identifier in use')
+                        return jsonify({'error': 'Username in use'}), 400
                 
                 server_challenge = base64.urlsafe_b64encode(os.urandom(32)).decode()
                 session_key = base64.urlsafe_b64encode(os.urandom(32)).decode()
+                
                 self.pending_auth[hashed_username] = {
                     'challenge': server_challenge,
                     'timestamp': datetime.now(),
                     'username': username,
                     'session_key': session_key
                 }
-                return jsonify({'status': 'ok', 'challenge': server_challenge, 'session_key': session_key})
-            except Exception as e:
-                return jsonify({'error': str(e)}), 400
+                
+                return jsonify({
+                    'status': 'ok', 
+                    'challenge': server_challenge, 
+                    'session_key': session_key
+                })
+            except:
+                return jsonify({'error': 'Auth failed'}), 400
 
     def setup_socketio(self):
         @self.socketio.on('connect')
@@ -142,8 +152,8 @@ class SecureChatServer:
                         del self.active_users[hashed_username]
                     del self.sid_to_username[sid]
                     self.broadcast_user_update()
-            except Exception as e:
-                logger.error(f"Disconnect error: {str(e)}")
+            except:
+                pass
 
         @self.socketio.on('register')
         def handle_register(data):
@@ -151,39 +161,38 @@ class SecureChatServer:
                 username = data.get('username')
                 session_key = data.get('session_key')
                 if not username:
-                    raise ValueError("Invalid username")
+                    return
                 
                 hashed_username = self.hash_username(username)
                 if hashed_username in self.active_users and self.active_users[hashed_username]['session_key'] == session_key:
                     self.sid_to_username[request.sid] = hashed_username
                     self.active_users[hashed_username]['sid'] = request.sid
                     self.broadcast_user_update()
-                else:
-                    raise ValueError(f"Registration failed for {username}: Invalid session")
-            except Exception as e:
-                emit('error', {'message': str(e)}, room=request.sid)
+            except:
+                pass
 
         @self.socketio.on('stream_data')
         def handle_message(data):
             try:
                 if len(str(data)) > self.MAX_MSG_SIZE:
-                    raise ValueError(f"Message exceeds size limit of {self.MAX_MSG_SIZE} bytes")
+                    return
                 
                 sid = request.sid
                 sender_hash = self.sid_to_username.get(sid)
                 if not sender_hash or sender_hash not in self.active_users:
-                    raise ValueError("Unauthorized message attempt")
+                    return
                 
                 sender = self.active_users[sender_hash]
                 encrypted_msg = data.get('message')
                 
                 if not encrypted_msg:
-                    raise ValueError("Empty message content")
+                    return
                 
+                # Verify message can be decrypted
                 decrypted_msg = sender['fernet'].decrypt(encrypted_msg.encode()).decode()
                 message_data = json.loads(decrypted_msg)
                 
-                # Broadcast message to all users
+                # Broadcast to all users
                 for recipient_hash, recipient in self.active_users.items():
                     try:
                         if 'sid' in recipient:
@@ -194,29 +203,27 @@ class SecureChatServer:
                     except:
                         continue
                         
-            except Exception as e:
-                emit('error', {'message': str(e)}, room=request.sid)
+            except:
+                pass
 
     def broadcast_user_update(self):
         try:
             active_streams = [data['username'] for data in self.active_users.values() if 'sid' in data]
             emit('cache_status', {'active_streams': active_streams}, broadcast=True)
-        except Exception:
+        except:
             pass
 
     def run(self):
         try:
             self.socketio.run(self.app, host=self.host, port=self.port)
-        except Exception as e:
-            logger.error(f"Server error: {str(e)}")
-            raise
+        except:
+            pass
 
 if __name__ == '__main__':
     server = SecureChatServer()
     try:
         server.run()
     except KeyboardInterrupt:
-        print("\nServer shutting down...")
-    except Exception as e:
-        logger.error(f"Fatal error: {str(e)}")
-        sys.exit(1)
+        pass
+    except:
+        pass
