@@ -24,6 +24,7 @@ class SecureChatServer:
         self.pending_auth = {}
         self.MAX_MSG_SIZE = 1024 * 1024
         self.admin_key = admin_key
+        self.admin_sids = set()  # Track admin sessions
         self.setup_routes()
         self.setup_socketio()
 
@@ -89,6 +90,8 @@ class SecureChatServer:
         def handle_disconnect():
             try:
                 sid = request.sid
+                if sid in self.admin_sids:
+                    self.admin_sids.remove(sid)
                 if sid in self.sid_to_username:
                     hashed_username = self.sid_to_username[sid]
                     if hashed_username in self.active_users: del self.active_users[hashed_username]
@@ -108,6 +111,30 @@ class SecureChatServer:
                     self.active_users[hashed_username]['sid'] = request.sid
                     self.broadcast_user_update()
             except: pass
+
+        @self.socketio.on('admin_command')
+        def handle_admin_command(data):
+            try:
+                command = data.get('command', '')
+                key = data.get('key', '')
+                sid = request.sid
+                
+                if command == 'auth':
+                    if key == self.admin_key:
+                        self.admin_sids.add(sid)
+                        emit('admin_response', {'status': 'ok', 'message': 'Authenticated as admin'})
+                    else:
+                        emit('admin_response', {'status': 'error', 'message': 'Invalid admin key'})
+                elif command == 'shutdown':
+                    if sid in self.admin_sids:
+                        emit('admin_response', {'status': 'ok', 'message': 'Server shutting down'}, broadcast=True)
+                        self.socketio.stop()
+                    else:
+                        emit('admin_response', {'status': 'error', 'message': 'Not authorized'})
+                else:
+                    emit('admin_response', {'status': 'error', 'message': 'Unknown command'})
+            except:
+                emit('admin_response', {'status': 'error', 'message': 'Command failed'})
 
         @self.socketio.on('stream_data')
         def handle_message(data):
