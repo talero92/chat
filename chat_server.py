@@ -24,7 +24,7 @@ class SecureChatServer:
         self.pending_auth = {}
         self.MAX_MSG_SIZE = 1024 * 1024
         self.admin_key = admin_key
-        self.admin_sids = set()  # Track admin sessions
+        self.admin_sids = set()
         self.setup_routes()
         self.setup_socketio()
 
@@ -36,7 +36,7 @@ class SecureChatServer:
             session_salt = hashlib.sha256(session_key.encode()).digest()
             kdf = PBKDF2HMAC(algorithm=hashes.SHA256(), length=32, salt=session_salt, iterations=100000, backend=default_backend())
             return base64.urlsafe_b64encode(kdf.derive(unique_material))
-        except Exception as e: raise
+        except: raise
 
     def setup_routes(self):
         @self.app.route('/assets/data/stream', methods=['GET'])
@@ -56,8 +56,14 @@ class SecureChatServer:
                 auth_data = self.pending_auth[hashed_username]
                 if session_key != auth_data['session_key']: return jsonify({'error': 'Invalid session'}), 401
                 encryption_key = self.derive_encryption_key(auth_data['challenge'], client_challenge, username, session_key)
-                self.active_users[hashed_username] = {'connected_at': datetime.now().isoformat(), 'address': request.remote_addr,
-                    'username': username, 'encryption_key': encryption_key, 'session_key': session_key, 'fernet': Fernet(encryption_key)}
+                self.active_users[hashed_username] = {
+                    'connected_at': datetime.now().isoformat(),
+                    'address': request.remote_addr,
+                    'username': username,
+                    'encryption_key': encryption_key,
+                    'session_key': session_key,
+                    'fernet': Fernet(encryption_key)
+                }
                 del self.pending_auth[hashed_username]
                 return jsonify({'status': 'ok'})
             except: return jsonify({'error': 'Auth failed'}), 401
@@ -77,8 +83,12 @@ class SecureChatServer:
                     else: return jsonify({'error': 'Username in use'}), 400
                 server_challenge = base64.urlsafe_b64encode(os.urandom(32)).decode()
                 session_key = base64.urlsafe_b64encode(os.urandom(32)).decode()
-                self.pending_auth[hashed_username] = {'challenge': server_challenge, 'timestamp': datetime.now(),
-                    'username': username, 'session_key': session_key}
+                self.pending_auth[hashed_username] = {
+                    'challenge': server_challenge,
+                    'timestamp': datetime.now(),
+                    'username': username,
+                    'session_key': session_key
+                }
                 return jsonify({'status': 'ok', 'challenge': server_challenge, 'session_key': session_key})
             except: return jsonify({'error': 'Auth failed'}), 400
 
@@ -117,6 +127,7 @@ class SecureChatServer:
             try:
                 command = data.get('command', '')
                 key = data.get('key', '')
+                target = data.get('target', '')
                 sid = request.sid
                 
                 if command == 'auth':
@@ -125,15 +136,32 @@ class SecureChatServer:
                         emit('admin_response', {'status': 'ok', 'message': 'Authenticated as admin'})
                     else:
                         emit('admin_response', {'status': 'error', 'message': 'Invalid admin key'})
-                elif command == 'shutdown':
-                    if sid in self.admin_sids:
-                        emit('admin_response', {'status': 'ok', 'message': 'Server shutting down'}, broadcast=True)
-                        self.socketio.stop()
+                        
+                elif command == 'shutdown' and sid in self.admin_sids:
+                    target_sid = None
+                    target_hash = None
+                    
+                    # Find target user
+                    for hash_id, user_data in self.active_users.items():
+                        if user_data.get('username') == target:
+                            target_sid = user_data.get('sid')
+                            target_hash = hash_id
+                            break
+                    
+                    if target_sid:
+                        # Send shutdown to target
+                        emit('force_shutdown', {}, room=target_sid)
+                        emit('admin_response', {'status': 'ok', 'message': f'Shutdown sent to {target}'})
+                        # Clean up user
+                        if target_hash in self.active_users:
+                            del self.active_users[target_hash]
+                        if target_sid in self.sid_to_username:
+                            del self.sid_to_username[target_sid]
+                        self.broadcast_user_update()
                     else:
-                        emit('admin_response', {'status': 'error', 'message': 'Not authorized'})
-                else:
-                    emit('admin_response', {'status': 'error', 'message': 'Unknown command'})
-            except:
+                        emit('admin_response', {'status': 'error', 'message': f'User {target} not found'})
+            except Exception as e:
+                print(f"Admin command error: {str(e)}", flush=True)
                 emit('admin_response', {'status': 'error', 'message': 'Command failed'})
 
         @self.socketio.on('stream_data')
